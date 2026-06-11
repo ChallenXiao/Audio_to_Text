@@ -11,12 +11,17 @@
 """
 
 import argparse
-import sys
+import re
 from datetime import datetime
 from pathlib import Path
 
 # 这些后缀会被正常处理；其他后缀会给出提示但仍尝试转写。
 COMMON_AUDIO_SUFFIXES = {".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".opus", ".mp4"}
+
+# 中日韩文字 + 全角标点范围，用于判断是否需要在拼接处去掉多余空格。
+_CJK = "一-鿿㐀-䶿　-〿＀-￯"
+# 句末标点（中英）：在这些标点之后断句。
+_SENTENCE_END = "。！？!?…"
 
 
 def parse_args(argv=None):
@@ -27,8 +32,8 @@ def parse_args(argv=None):
     parser.add_argument("audio", help="音频文件路径，如 recordings/interview.m4a")
     parser.add_argument(
         "--model",
-        default="medium",
-        help="模型大小：tiny / base / small / medium / large-v3，越大越准越慢",
+        default="large-v3-turbo",
+        help="模型：tiny/base/small/medium/large-v3/large-v3-turbo，越大越准越慢",
     )
     parser.add_argument(
         "--language",
@@ -52,15 +57,15 @@ def parse_args(argv=None):
         "--timestamps",
         dest="timestamps",
         action="store_true",
-        help="在每行文字前加时间戳（默认）",
+        help="在每行文字前加时间戳",
     )
     ts.add_argument(
         "--no-timestamps",
         dest="timestamps",
         action="store_false",
-        help="不加时间戳，输出纯文字稿（更适合直接喂给大模型）",
+        help="不加时间戳，输出按句子断行的纯文字稿（默认）",
     )
-    parser.set_defaults(timestamps=True)
+    parser.set_defaults(timestamps=False)  # 默认不加时间戳
 
     return parser.parse_args(argv)
 
@@ -132,8 +137,34 @@ def transcribe_audio(audio_path, model_size, language, device):
     return segments, info
 
 
+def merge_segment_text(segments):
+    """把所有段落文字拼成一整段，并清理拼接处多余的空格。
+
+    Whisper 的每个段落往往不是完整句子，直接逐段换行会在句子中间断开。
+    这里先合并，再交给 split_sentences 按句子重新断行。
+    """
+    parts = [seg.text.strip() for seg in segments if seg.text.strip()]
+    text = " ".join(parts)
+    # 去掉中文字符之间多余的空格（拼接造成的）
+    text = re.sub(rf"(?<=[{_CJK}])\s+(?=[{_CJK}])", "", text)
+    # 去掉中文标点前后的多余空格
+    text = re.sub(r"\s+(?=[，。！？；：、）】」』])", "", text)
+    text = re.sub(r"(?<=[（【「『])\s+", "", text)
+    return text.strip()
+
+
+def split_sentences(text):
+    """在句末标点之后断句，保留标点，返回句子列表。"""
+    pieces = re.split(rf"(?<=[{_SENTENCE_END}])", text)
+    return [p.strip() for p in pieces if p.strip()]
+
+
 def render_markdown(segments, info, source_name, with_timestamps):
-    """根据转写结果生成 Markdown 文本。"""
+    """根据转写结果生成 Markdown 文本。
+
+    - 带时间戳：保留每个段落的起止时间，逐段输出。
+    - 不带时间戳：合并后按完整句子断行，可读性更好。
+    """
     duration = getattr(info, "duration", 0) or 0
     detected = getattr(info, "language", None) or "未知"
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -149,16 +180,18 @@ def render_markdown(segments, info, source_name, with_timestamps):
         "",
     ]
 
-    for seg in segments:
-        text = seg.text.strip()
-        if not text:
-            continue
-        if with_timestamps:
+    if with_timestamps:
+        for seg in segments:
+            text = seg.text.strip()
+            if not text:
+                continue
             stamp = f"[{format_timestamp(seg.start)} → {format_timestamp(seg.end)}]"
             lines.append(f"**{stamp}** {text}")
-        else:
-            lines.append(text)
-        lines.append("")
+            lines.append("")
+    else:
+        for sentence in split_sentences(merge_segment_text(segments)):
+            lines.append(sentence)
+            lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
