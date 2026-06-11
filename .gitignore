@@ -1,0 +1,23 @@
+# ===== 隐私：录音与转写稿只留本地，不上传 =====
+recordings/*
+transcripts/*
+# 保留文件夹占位，让目录结构能进版本库
+!recordings/.gitkeep
+!transcripts/.gitkeep
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+env/
+
+# ===== 系统 / 编辑器 =====
+.DS_Store
+.idea/
+.vscode/
+.claude/
